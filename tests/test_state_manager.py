@@ -6,7 +6,9 @@ import pytest
 
 from src.core.domain import GitHubPlatformContext, QuizPhase, QuizState
 from src.core.state_manager import (
+    _ABANDON_EVENT_SCRIPT,
     _CLEAR_STATE_SCRIPT,
+    _COMPLETE_EVENT_SCRIPT,
     _RECORD_FAILED_ATTEMPT_SCRIPT,
     _RELEASE_LEASE_SCRIPT,
     _RENEW_LEASE_SCRIPT,
@@ -58,11 +60,30 @@ class MemoryRedis:
 
         if script == _RENEW_LEASE_SCRIPT:
             return int(self.values.get(keys[0]) == args[0])
+        if script == _ABANDON_EVENT_SCRIPT:
+            serialized = self.values.get(keys[0])
+            if serialized is None:
+                return 0
+            event = json.loads(serialized)
+            if event["status"] != "PROCESSING" or event["owner"] != args[0]:
+                return 0
+            return await self.delete(keys[0])
+        if script == _COMPLETE_EVENT_SCRIPT:
+            serialized = self.values.get(keys[0])
+            if serialized is None:
+                return 0
+            event = json.loads(serialized)
+            if event["status"] != "PROCESSING" or event["owner"] != args[0]:
+                return 0
+            self.values[keys[0]] = args[1]
+            return 1
         if script == _RELEASE_LEASE_SCRIPT:
             if self.values.get(keys[0]) != args[0]:
                 return 0
             return await self.delete(keys[0])
         if script == _SAVE_STATE_SCRIPT:
+            if args[3] and self.values.get(keys[2]) != args[3]:
+                return 0
             self.values[keys[0]] = args[0]
             self.values[keys[1]] = args[2]
             return 1
@@ -113,13 +134,33 @@ async def test_event_claim_is_idempotent_and_can_complete() -> None:
     redis = MemoryRedis()
     manager = StateManager(redis)
 
-    assert await manager.claim_event("delivery:1")
-    assert not await manager.claim_event("delivery:1")
+    owner = await manager.claim_event("delivery:1")
+    assert owner is not None
+    assert await manager.claim_event("delivery:1") is None
 
-    await manager.complete_event("delivery:1")
+    assert await manager.complete_event("delivery:1", owner)
 
     event = json.loads(next(iter(redis.values.values())))
     assert event["status"] == "COMPLETED"
+
+
+@pytest.mark.asyncio
+async def test_only_processing_event_claims_can_be_abandoned() -> None:
+    redis = MemoryRedis()
+    manager = StateManager(redis)
+
+    owner = await manager.claim_event("delivery-1")
+    assert owner is not None
+    assert not await manager.abandon_event("delivery-1", "other-owner")
+    assert await manager.abandon_event("delivery-1", owner)
+    replacement_owner = await manager.claim_event("delivery-1")
+    assert replacement_owner is not None
+
+    assert not await manager.complete_event("delivery-1", owner)
+    assert await manager.complete_event("delivery-1", replacement_owner)
+
+    assert not await manager.abandon_event("delivery-1", replacement_owner)
+    assert await manager.claim_event("delivery-1") is None
 
 
 @pytest.mark.asyncio
@@ -159,6 +200,25 @@ async def test_quiz_state_rejects_mismatched_context_sha() -> None:
 
     with pytest.raises(ValueError, match="must match"):
         await manager.save_quiz_state(context(), mismatched_state)
+
+
+@pytest.mark.asyncio
+async def test_quiz_state_save_requires_current_lease_owner_when_provided() -> None:
+    redis = MemoryRedis()
+    manager = StateManager(redis)
+    platform_context = context()
+    token = await manager.acquire_lease(platform_context)
+    assert token is not None
+
+    with pytest.raises(RuntimeError, match="lease ownership was lost"):
+        await manager.save_quiz_state(
+            platform_context, published_state(), "other-token"
+        )
+
+    await manager.save_quiz_state(
+        platform_context, published_state(), token
+    )
+    assert await manager.get_quiz_state(platform_context) == published_state()
 
 
 @pytest.mark.asyncio

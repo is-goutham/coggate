@@ -23,6 +23,9 @@ return 0
 """
 
 _SAVE_STATE_SCRIPT = """
+if ARGV[4] ~= "" and redis.call("GET", KEYS[3]) ~= ARGV[4] then
+    return 0
+end
 redis.call("SET", KEYS[1], ARGV[1], "EX", ARGV[2])
 redis.call("SET", KEYS[2], ARGV[3], "EX", ARGV[2])
 return 1
@@ -45,6 +48,31 @@ redis.call("DEL", KEYS[1])
 if redis.call("GET", KEYS[2]) == ARGV[1] then
     redis.call("DEL", KEYS[2])
 end
+return 1
+"""
+
+_ABANDON_EVENT_SCRIPT = """
+local serialized = redis.call("GET", KEYS[1])
+if not serialized then
+    return 0
+end
+local event = cjson.decode(serialized)
+if event["status"] == "PROCESSING" and event["owner"] == ARGV[1] then
+    return redis.call("DEL", KEYS[1])
+end
+return 0
+"""
+
+_COMPLETE_EVENT_SCRIPT = """
+local serialized = redis.call("GET", KEYS[1])
+if not serialized then
+    return 0
+end
+local event = cjson.decode(serialized)
+if event["status"] ~= "PROCESSING" or event["owner"] ~= ARGV[1] then
+    return 0
+end
+redis.call("SET", KEYS[1], ARGV[2], "EX", ARGV[3])
 return 1
 """
 
@@ -89,9 +117,11 @@ class StateManager:
         self._quiz_ttl = quiz_ttl_seconds
         self._cooldown_ttl = cooldown_ttl_seconds
 
-    async def claim_event(self, event_id: str) -> bool:
+    async def claim_event(self, event_id: str) -> str | None:
+        owner = str(uuid4())
         event = {
             "status": "PROCESSING",
+            "owner": owner,
             "timestamp": datetime.now(UTC).isoformat(),
         }
         result = await self._redis.set(
@@ -100,19 +130,31 @@ class StateManager:
             nx=True,
             ex=self._event_ttl,
         )
-        return bool(result)
+        return owner if result else None
 
-    async def complete_event(self, event_id: str) -> None:
+    async def complete_event(self, event_id: str, owner: str) -> bool:
         event = {
             "status": "COMPLETED",
             "timestamp": datetime.now(UTC).isoformat(),
         }
-        await self._redis.set(
+        result = await self._redis.eval(
+            _COMPLETE_EVENT_SCRIPT,
+            1,
             self._event_key(event_id),
+            owner,
             json.dumps(event, separators=(",", ":")),
-            xx=True,
-            ex=self._event_ttl,
+            str(self._event_ttl),
         )
+        return bool(result)
+
+    async def abandon_event(self, event_id: str, owner: str) -> bool:
+        result = await self._redis.eval(
+            _ABANDON_EVENT_SCRIPT,
+            1,
+            self._event_key(event_id),
+            owner,
+        )
+        return bool(result)
 
     async def acquire_lease(self, context: PlatformContext) -> str | None:
         token = str(uuid4())
@@ -144,20 +186,27 @@ class StateManager:
         return bool(result)
 
     async def save_quiz_state(
-        self, context: PlatformContext, state: QuizState
+        self,
+        context: PlatformContext,
+        state: QuizState,
+        lease_token: str | None = None,
     ) -> None:
         if state.head_commit_sha != context.head_commit_sha:
             raise ValueError("Quiz state SHA must match the platform context SHA.")
 
-        await self._redis.eval(
+        result = await self._redis.eval(
             _SAVE_STATE_SCRIPT,
-            2,
+            3,
             self._state_key(context, state.head_commit_sha),
             self._active_sha_key(context),
+            self._lease_key(context),
             state.model_dump_json(),
             str(self._quiz_ttl),
             state.head_commit_sha,
+            lease_token or "",
         )
+        if not result:
+            raise RuntimeError("Quiz state was not saved because lease ownership was lost.")
 
     async def get_active_sha(self, context: PlatformContext) -> str | None:
         return self._decode(await self._redis.get(self._active_sha_key(context)))
