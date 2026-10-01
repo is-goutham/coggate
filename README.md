@@ -8,6 +8,7 @@ CogGate detects meaningful complexity introduced by a pull request and asks the
 author a short, architecture-focused comprehension quiz before allowing the
 change to merge.
 
+[![CI](https://github.com/is-goutham/coggate/actions/workflows/ci.yml/badge.svg)](https://github.com/is-goutham/coggate/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Azure Functions](https://img.shields.io/badge/Azure-Functions-0062AD?logo=azurefunctions&logoColor=white)](https://azure.microsoft.com/products/functions/)
 [![Pydantic](https://img.shields.io/badge/Pydantic-v2-E92063?logo=pydantic&logoColor=white)](https://docs.pydantic.dev/)
