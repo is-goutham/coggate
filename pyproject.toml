@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "coggate"
+version = "0.1.0"
+description = "Multi-tenant cognitive pull request gatekeeper"
+requires-python = ">=3.11"
+dependencies = [
+    "azure-functions>=1.21,<2",
+    "pydantic>=2.10,<3",
+    "redis>=5.2,<6",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["function_app.py", "src", "tests"]
