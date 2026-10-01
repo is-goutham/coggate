@@ -46,7 +46,7 @@ Install dependencies:
 python -m pip install -r requirements-dev.txt
 ```
 
-Run the local checks:
+Run the local checks (matching the CI workflow):
 
 ```bash
 python -m pytest
