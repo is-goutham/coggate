@@ -53,6 +53,27 @@ python -m pytest
 python -m mypy function_app.py src tests
 ```
 
+## Reproducing CI failures locally
+
+The continuous-integration workflow (`.github/workflows/ci.yml`) runs exactly
+the two local checks above, once per supported Python version (3.11 and 3.12):
+
+```bash
+python -m pytest
+python -m mypy function_app.py src tests
+```
+
+To reproduce a specific CI job on your machine, point your virtualenv at that
+job's Python version, install the same dev dependencies
+(`python -m pip install -r requirements-dev.txt`), and run both commands. The
+strict `mypy` configuration is shared through `pyproject.toml`
+(`python_version = "3.11"`, `strict = true`), so the same `files` set
+(`function_app.py`, `src`, `tests`) is checked identically on every
+interpreter.
+
+A red CI run therefore always reproduces offline with the two commands above:
+there is nothing the workflow does that you cannot run locally.
+
 ## Architecture rules
 
 ### Keep the core platform-independent

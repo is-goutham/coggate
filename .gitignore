@@ -5,3 +5,5 @@ __pycache__/
 .venv/
 .python_packages/
 local.settings.json
+config.bat
+node_modules
